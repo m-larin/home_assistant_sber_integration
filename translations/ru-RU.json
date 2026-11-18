@@ -1,0 +1,34 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Sber Smart Home",
+        "description": "Подключение к облаку Сбера (SberDevices) по MQTT. Используйте Device ID и пароль интеграции, полученные в [Сбер Studio](https://developers.sber.ru/studio/workspaces/).",
+        "data": {
+          "device_id": "Device ID (логин интеграции)",
+          "password": "Пароль интеграции",
+          "broker": "MQTT-брокер Сбера",
+          "port": "Порт",
+          "home": "Имя дома (как в приложении Салют)"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Не удалось подключиться к брокеру Сбера. Проверьте адрес, порт и подключение к интернету."
+    },
+    "abort": {
+      "already_configured": "Брокер с такими параметрами уже добавлен"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Параметры Sber Smart Home",
+        "description": "Название дома, которое будет отображаться в приложении Салют.",
+        "data": {
+          "home": "Имя дома"
+        }
+      }
+    }
+  }
+}

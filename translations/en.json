@@ -1,0 +1,34 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Sber Smart Home",
+        "description": "Connect to the Sber Smart Home cloud (SberDevices) over MQTT. Use the Device ID and integration password from [Sber Studio](https://developers.sber.ru/studio/workspaces/).",
+        "data": {
+          "device_id": "Device ID (integration login)",
+          "password": "Integration password",
+          "broker": "Sber MQTT broker",
+          "port": "Port",
+          "home": "House name (as in the Salute app)"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Cannot connect to the Sber broker. Check the address, port and internet connectivity."
+    },
+    "abort": {
+      "already_configured": "A broker with these parameters is already configured"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Sber Smart Home options",
+        "description": "Name of the house as displayed in the Salute app.",
+        "data": {
+          "home": "House name"
+        }
+      }
+    }
+  }
+}
