@@ -17,7 +17,7 @@ SberDevices «MQTT-to-Cloud»). REST/WebSocket API ни Сбера, ни HA не
   выключателя и т. п.) мгновенно сообщается в облако Сбера, чтобы статус в
   приложении и ответы колонки были актуальными.
 
-Это «родной» аналог аддона [MQTT-SberGate](../MQTT-SberGate), но
+Это «родной» аналог аддона [MQTT-SberGate](https://github.com/JanchEwgen/MQTT-SberGate), но
 реализованный как интеграция: не нужен отдельный контейнер, REST API HA и
 внешний WebSocket-клиент.
 
