@@ -1,11 +1,11 @@
 {
   "domain": "sber",
   "name": "Sber Smart Home (SberDevices MQTT)",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "config_flow": true,
   "documentation": "https://developers.sber.ru/docs/ru/smarthome/mqtt-diy/mqtt-to-diy",
   "integration_type": "hub",
   "iot_class": "cloud_push",
   "loggers": ["paho"],
-  "requirements": ["paho-mqtt>=1.6.1"]
+  "requirements": ["paho-mqtt>=2.0.0"]
 }

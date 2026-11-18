@@ -8,13 +8,14 @@ CONF_PASSWORD = "password"  # пароль интеграции
 CONF_BROKER = "broker"  # адрес MQTT-брокера Сбера
 CONF_PORT = "port"  # порт MQTT-брокера
 CONF_HOME = "home"  # имя дома в приложении Салют
+CONF_ENTITIES = "entities"  # опц. белый список HA-сущностей, публикуемых в Салют
 
 # Defaults
 DEFAULT_BROKER = "mqtt-partners.iot.sberdevices.ru"
 DEFAULT_PORT = 8883
 DEFAULT_HOME = "Мой дом"
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 
 # HA domains that are mirrored to Sber
 DOMAIN_LIGHT = "light"

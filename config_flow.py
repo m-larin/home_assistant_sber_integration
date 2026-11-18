@@ -7,6 +7,8 @@ import logging
 import queue
 import ssl
 
+import paho.mqtt.client as mqtt
+from paho.mqtt.enums import CallbackAPIVersion
 import voluptuous as vol
 
 from homeassistant.config_entries import (
@@ -17,17 +19,18 @@ from homeassistant.config_entries import (
 )
 from homeassistant.const import CONF_PASSWORD, CONF_PORT
 from homeassistant.core import callback
+from homeassistant.helpers.selector import EntitySelector
 
 from .const import (
     CONF_BROKER,
     CONF_DEVICE_ID,
+    CONF_ENTITIES,
     CONF_HOME,
     DEFAULT_BROKER,
     DEFAULT_HOME,
     DEFAULT_PORT,
     DOMAIN,
 )
-from .paho_compat import new_client
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -46,7 +49,10 @@ async def async_test_sber_connection(
     """
     result: queue.Queue[tuple[bool, str | None]] = queue.Queue(maxsize=1)
 
-    client = new_client(client_id="ha-sber-test")
+    client = mqtt.Client(
+        callback_api_version=CallbackAPIVersion.VERSION1,
+        client_id="ha-sber-test",
+    )
     client._test_result = result  # type: ignore[attr-defined]
 
     def _on_connect(_c, _ud, _flags, rc, *props):  # noqa: ARG001
@@ -84,7 +90,7 @@ async def async_test_sber_connection(
         return False, str(err)
     finally:
         try:
-            client.loop_stop()  # paho 1.6 has no timeout arg
+            client.loop_stop()
             client.disconnect()
         except (ValueError, OSError):
             pass
@@ -155,7 +161,7 @@ class SberOptionsFlow(OptionsFlow):
     async def async_step_init(
         self, user_input: dict | None = None
     ) -> ConfigFlowResult:
-        """Manage the options (house name)."""
+        """Manage the options (house name and device whitelist)."""
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
 
@@ -165,9 +171,18 @@ class SberOptionsFlow(OptionsFlow):
             CONF_HOME,
             self.config_entry.data.get(CONF_HOME, DEFAULT_HOME),
         )
+        # Pre-select whatever is already saved so the user only has to tick
+        # boxes off. An empty selection means "publish every light/switch".
+        current_entities = self.config_entry.options.get(
+            CONF_ENTITIES, self.config_entry.data.get(CONF_ENTITIES, [])
+        ) or []
+
         options_schema = vol.Schema(
             {
                 vol.Optional(CONF_HOME, default=current): vol.Coerce(str),
+                vol.Optional(CONF_ENTITIES, default=current_entities): EntitySelector(
+                    {"domain": ["light", "switch"], "multiple": True}
+                ),
             }
         )
         return self.async_show_form(step_id="init", data_schema=options_schema)

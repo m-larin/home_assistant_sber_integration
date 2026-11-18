@@ -26,6 +26,7 @@ import uuid
 from typing import Any
 
 import paho.mqtt.client as mqtt
+from paho.mqtt.enums import CallbackAPIVersion
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
@@ -36,6 +37,7 @@ from homeassistant.helpers.event import async_track_state_change_event
 from .const import (
     CONF_BROKER,
     CONF_DEVICE_ID,
+    CONF_ENTITIES,
     CONF_HOME,
     CONF_PASSWORD,
     CONF_PORT,
@@ -46,7 +48,6 @@ from .const import (
     SBER_GLOBAL_TOPIC,
     VERSION,
 )
-from .paho_compat import new_client
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -114,24 +115,65 @@ def _hsv_to_rgb(h: float, s: float, v: float) -> tuple[int, int, int]:
     return int(round(r * 255)), int(round(g * 255)), int(round(b * 255))
 
 
+def _light_features(attributes: dict[str, Any]) -> list[str]:
+    """Return Sber feature keys supported by a HA light entity.
+
+    The advertised capabilities must reflect what the device *can* do (even
+    while it is off) so Sber can send the corresponding commands. When
+    ``supported_color_modes`` is available it is the source of truth;
+    otherwise we fall back to inferring capabilities from attributes.
+    """
+    features = ["online", "on_off"]
+    modes = attributes.get("supported_color_modes")
+    if modes is not None:
+        mode_strs = {str(getattr(m, "value", m)) for m in modes}
+        has_color_temp = "color_temp" in mode_strs
+        has_color = bool(mode_strs & {"hs", "xy", "rgb", "rgbw", "rgbww"})
+        has_brightness = bool(mode_strs - {"onoff", "unknown"}) or has_color or has_color_temp
+    else:
+        has_color_temp = (
+            attributes.get("color_temp") is not None
+            or "min_mireds" in attributes
+            or "max_mireds" in attributes
+        )
+        has_color = any(k in attributes for k in ("hs_color", "rgb_color", "xy_color"))
+        has_brightness = (
+            attributes.get("brightness") is not None
+            or has_color
+            or has_color_temp
+        )
+    if has_brightness:
+        features.append("light_brightness")
+    if has_color_temp:
+        features.append("light_colour_temp")
+    if has_color:
+        features.append("light_colour")
+    return features
+
+
 def _ha_to_sber_states(
     domain: str, state: str, attributes: dict[str, Any]
 ) -> tuple[dict[str, list], list[str]] | None:
     """Map an HA light/switch state to (``{"states": [...]}``, features).
 
-    Returns ``None`` when nothing meaningful can be advertised.
+    The returned feature list reflects the entity's capabilities so the
+    advertised device model stays accurate. Returns ``None`` when nothing
+    meaningful can be advertised.
     """
     states: list[dict] = [
         {"key": "online", "value": {"type": T_BOOL, "bool_value": True}},
         {"key": "on_off", "value": {"type": T_BOOL, "bool_value": state == "on"}},
     ]
-    features = ["online", "on_off"]
+    if domain == "light":
+        features = _light_features(attributes)
+    else:
+        features = ["online", "on_off"]
 
     if domain == "light" and state == "on":
-        if "color_temp" in attributes:
-            features.append("light_colour_temp")
+        color_temp = attributes.get("color_temp")
+        if color_temp is not None:
             # HA color_temp is in mired; Sber wants 0..1000 warm->cold.
-            kelvin = 1_000_000 / max(1, attributes["color_temp"])
+            kelvin = 1_000_000 / max(1, color_temp)
             states.append(
                 {
                     "key": "light_colour_temp",
@@ -144,7 +186,6 @@ def _ha_to_sber_states(
         elif "rgb_color" in attributes:
             r, g, b = attributes["rgb_color"]
             if not (r == g == b == 255):
-                features.append("light_colour")
                 import colorsys
 
                 h, s, v = colorsys.rgb_to_hsv(r / 255, g / 255, b / 255)
@@ -161,8 +202,8 @@ def _ha_to_sber_states(
                         },
                     }
                 )
-        if "brightness" in attributes:
-            features.append("light_brightness")
+        brightness = attributes.get("brightness")
+        if brightness is not None:
             states.append(
                 {
                     "key": "light_brightness",
@@ -170,7 +211,7 @@ def _ha_to_sber_states(
                         "type": T_INTEGER,
                         "integer_value": max(
                             SBER_MIN_BRIGHTNESS,
-                            int(round(attributes["brightness"] / 255 * 1000)),
+                            int(round(brightness / 255 * 1000)),
                         ),
                     },
                 }
@@ -198,6 +239,12 @@ class SberGateway:
         self.broker: str = merged[CONF_BROKER]
         self.port: int = int(merged[CONF_PORT])
         self.home: str = merged.get(CONF_HOME, DEFAULT_HOME)
+        # Optional whitelist of HA entity_ids to expose to Sber. When empty /
+        # unset (None) we keep the original behaviour and mirror everything.
+        raw_entities = merged.get(CONF_ENTITIES)
+        self.entity_filter: list[str] | None = (
+            [str(e) for e in raw_entities] if raw_entities else None
+        )
 
         self.root_topic = f"sberdevices/v1/{self.device_id}"
         self.down_topic = f"{self.root_topic}/down"
@@ -206,8 +253,8 @@ class SberGateway:
         self._connected_event = asyncio.Event()
         self._ever_connected = False
         self._connect_error: str | None = None
-        # Track connection state ourselves: paho 1.x and 2.x both lack a
-        # public ``Client.connected`` attribute, so we cannot read it.
+        # Track connection state ourselves: paho exposes no public
+        # ``Client.connected`` attribute, so we cannot read it.
         self._connected = False
         # The Sber cloud sends a global config (``sberdevices/v1/__config``)
         # right after a device connects and only accepts the device config
@@ -226,7 +273,10 @@ class SberGateway:
         verifiable certificate chain, so we mirror the reference SberGate
         add-on: TLS without certificate verification.
         """
-        client = new_client(client_id=f"sber-ha-{uuid.uuid4().hex[:12]}")
+        client = mqtt.Client(
+            callback_api_version=CallbackAPIVersion.VERSION1,
+            client_id=f"sber-ha-{uuid.uuid4().hex[:12]}",
+        )
         client.on_connect = self._on_connect
         client.on_disconnect = self._on_disconnect
         client.on_connect_fail = self._on_connect_fail
@@ -246,7 +296,7 @@ class SberGateway:
         self._connected = False
         if client is not None:
             with contextlib.suppress(Exception):
-                # paho 1.6 loop_stop() has no timeout argument
+                # Stop the network loop, then drop the socket.
                 client.loop_stop()
                 client.disconnect()
 
@@ -264,7 +314,7 @@ class SberGateway:
         self.hass.loop.call_soon_threadsafe(self._async_on_disconnect)
 
     def _on_connect_fail(self, _client):
-        """Called once when the initial connection is refused (paho 1.x)."""
+        """Called once when the initial connection is refused (v1 callback API)."""
         self.hass.loop.call_soon_threadsafe(self._async_on_connect_fail)
 
     def _on_message(self, _client, _userdata, msg: mqtt.MQTTMessage) -> None:
@@ -306,7 +356,7 @@ class SberGateway:
         self._ever_connected = True
         self._connected = True
         try:
-            # Both paho 1.x and 2.x require a list of (topic, qos) tuples
+            # paho requires a list of (topic, qos) tuples
             # when subscribing to several topics at once.
             self._client.subscribe(
                 [
@@ -516,12 +566,24 @@ class SberGateway:
         await self.hass.services.async_call(domain, service, data, blocking=True)
 
     # -- HA entity tracking ---------------------------------------------------
+    def _entity_allowed(self, entity_id: str) -> bool:
+        """Return True when *entity_id* should be exposed to Sber.
+
+        When the user configured a device whitelist (options → devices) only
+        those entities are published; otherwise every light/switch is used.
+        """
+        if not self.entity_filter:
+            return True
+        return entity_id in self.entity_filter
+
     @callback
     def _track_entities(self) -> None:
         """(Re)build the mirrored device set from HA's current states."""
         states = self.hass.states.async_all(["light", "switch"])
         seen: set[str] = set()
         for state in states:
+            if not self._entity_allowed(state.entity_id):
+                continue
             seen.add(state.entity_id)
             self._register_entity(state.entity_id, state)
 
@@ -536,17 +598,15 @@ class SberGateway:
     def _register_entity(self, entity_id: str, state) -> None:
         dev = self.devices.get(entity_id)
         if dev is None:
-            # guess features; they are refined on the first state report
+            if state.domain == "light":
+                features = _light_features(state.attributes)
+            else:
+                features = ["online", "on_off"]
             dev = {
                 "name": state.attributes.get(
                     "friendly_name", entity_id.split(".", 1)[1].replace("_", " ").title()
                 ),
-                "features": (
-                    ["online", "on_off", "light_brightness", "light_colour_temp",
-                     "light_colour"]
-                    if state.domain == "light"
-                    else ["online", "on_off"]
-                ),
+                "features": features,
                 "states": None,
             }
             self.devices[entity_id] = dev
@@ -569,9 +629,9 @@ class SberGateway:
     def _sync_state(self, entity_id: str) -> None:
         """Update the cached Sber state from HA and publish to Sber.
 
-        Features are determined by the entity *type* (set at registration),
-        not by the current state: a light advertises its colour/brightness
-        features even while off, so that Sber can send those commands.
+        Advertised features follow the entity's capabilities (not the
+        transient state), so a light keeps its colour/brightness features
+        even while off and Sber can still send those commands.
         """
         dev = self.devices.get(entity_id)
         if dev is None:
@@ -582,10 +642,18 @@ class SberGateway:
         mapped = _ha_to_sber_states(state.domain, state.state, state.attributes)
         if mapped is None:
             return
-        new_states, _features = mapped
+        new_states, new_features = mapped
+        changed = False
+        if new_features != dev.get("features"):
+            dev["features"] = new_features
+            changed = True
         if dev.get("states") != new_states:
             dev["states"] = new_states
             self._publish_states([entity_id])
+            # states are part of the device snapshot; config republish is
+            # only needed when the advertised capability set changes.
+        if changed and self._connected:
+            self._publish_config()
 
     @callback
     def _async_on_state_changed(self, event) -> None:
